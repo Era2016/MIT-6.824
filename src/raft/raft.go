@@ -113,9 +113,6 @@ type Raft struct {
 	cond         *sync.Cond
 	applyCh      chan ApplyMsg
 	lastReceived time.Time // last time the peer heard from the leader
-
-	lastIncludedIndex int
-	lastIncludedTerm  int
 }
 
 type LogEntry struct {
@@ -145,7 +142,7 @@ func (rf *Raft) persist() {
 	// Your code here (2C).
 	// Example:
 
-	//DPrintf("[term %d]: Raft [%d] [state %d] persists [votedfor %d] [lenlog %v]", rf.currentTerm, rf.me, rf.state, rf.votedFor, len(rf.log))
+	DPrintf("[term %d]: Raft [%d] [state %d] persists [votedfor %d] [lenlog %v]", rf.currentTerm, rf.me, rf.state, rf.votedFor, len(rf.log))
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
 	e.Encode(rf.currentTerm)
@@ -153,6 +150,7 @@ func (rf *Raft) persist() {
 	e.Encode(rf.log)
 	data := w.Bytes()
 	rf.persister.SaveRaftState(data)
+	//DPrintf("=========[BYTE: %v]===========", string(rf.persister.raftstate))
 	data = nil
 }
 
@@ -184,20 +182,6 @@ func (rf *Raft) readPersist(data []byte) {
 	}
 }
 
-func (rf *Raft) getLastLogIndex() int {
-	//rf.mu.Lock()
-	//defer rf.mu.Unlock()
-
-	return rf.lastIncludedIndex + len(rf.log) - 1
-}
-
-func (rf *Raft) getFirstLogIndex() int {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-
-	return rf.lastIncludedIndex
-}
-
 //
 // A service wants to switch to snapshot.  Only do so if Raft hasn't
 // have more recent info since it communicate the snapshot on applyCh.
@@ -205,68 +189,8 @@ func (rf *Raft) getFirstLogIndex() int {
 func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int, snapshot []byte) bool {
 
 	// Your code here (2D).
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
 
-	if lastIncludedIndex <= rf.commitIndex {
-		return false
-	}
-
-	lastLogIndex := rf.getLastLogIndex()
-	rf.shrinkLogEntries(lastLogIndex, lastIncludedIndex)
-	rf.persist()
-	rf.persister.SaveStateAndSnapshot(rf.persister.ReadRaftState(), snapshot)
-
-	rf.commitIndex = lastIncludedIndex
-	rf.lastApplied = lastIncludedIndex
 	return true
-}
-
-type RequestInstallSnapshotArgs struct {
-	Term              int
-	LeaderId          int
-	LastIncludedIndex int
-	LastIncludeTerm   int
-	Data              []byte
-	//Offset int
-	//Done bool
-}
-
-type RequestInstallSnapshotsReply struct {
-	Term int
-}
-
-func (rf *Raft) InstallSnapshot(args *RequestInstallSnapshotArgs, reply *RequestInstallSnapshotsReply) {
-
-	rf.mu.Lock()
-	reply.Term = rf.currentTerm
-
-	if args.Term < rf.currentTerm {
-		rf.mu.Unlock()
-		return
-	}
-
-	if args.Term > rf.currentTerm {
-		rf.currentTerm = args.Term
-		rf.votedFor = -1
-		rf.state = STATE_FOLLOWER
-	}
-
-	rf.lastReceived = time.Now()
-	if args.LastIncludedIndex <= rf.getLastLogIndex() && rf.log[args.LastIncludedIndex].Term == args.LastIncludeTerm {
-		rf.mu.Unlock()
-		return
-	}
-
-	rf.log = nil
-	rf.mu.Unlock()
-
-	rf.applyCh <- ApplyMsg{
-		SnapshotValid: true,
-		Snapshot:      args.Data,
-		SnapshotTerm:  args.LastIncludeTerm,
-		SnapshotIndex: args.LastIncludedIndex,
-	}
 }
 
 // the service says it has created a snapshot that has
@@ -276,28 +200,6 @@ func (rf *Raft) InstallSnapshot(args *RequestInstallSnapshotArgs, reply *Request
 func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	// Your code here (2D).
 
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-
-	lastLogIndex := rf.getLastLogIndex()
-	if index > lastLogIndex {
-		DPrintf("snapshot failed, index[%d] much more [%d]", index, lastLogIndex)
-		return
-	}
-
-	rf.shrinkLogEntries(lastLogIndex, index)
-	rf.persist()
-	rf.persister.SaveStateAndSnapshot(rf.persister.ReadRaftState(), snapshot)
-}
-
-func (rf *Raft) shrinkLogEntries(lastLogIndex, index int) {
-	dst := make([]LogEntry, lastLogIndex-index)
-	copy(dst, rf.log[index+1:])
-	//dst[0] = LogEntry{Term: rf.log[index].Term, Command: nil}
-
-	rf.lastIncludedIndex = index
-	rf.lastIncludedTerm = rf.log[index].Term
-	rf.log = dst
 }
 
 //
@@ -446,6 +348,12 @@ func (rf *Raft) AppendEntries(args *RequestAppendEntriesArgs, reply *RequestAppe
 
 		return
 	}
+
+	//if args.PrevLogIndex >= len(rf.log) || rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
+	//	//DPrintf("===rf.log[prevLogIndex].Term->%d, args.Term->%d===", rf.log[args.PrevLogIndex].Term, args.PrevLogTerm)
+	//	reply.Success = false
+	//	return
+	//}
 
 	//To bring a follower’s log into consistency with its own,
 	//the leader must find the latest log entry where the two
