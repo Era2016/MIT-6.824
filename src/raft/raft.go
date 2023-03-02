@@ -275,14 +275,15 @@ type RequestInstallSnapshotsReply struct {
 func (rf *Raft) InstallSnapshot(args *RequestInstallSnapshotArgs, reply *RequestInstallSnapshotsReply) {
 
 	rf.mu.Lock()
-	DPrintf("[term %d]:Raft [%d] state[%d] InstallSnapshot currentLogIndex[%d-%d] term[%d]-lastIncludedIndex[%d]-lastIncludedTerm[%d]",
-		rf.currentTerm, rf.me, rf.state, rf.getFirstLogIndex(), rf.getLastLogIndex(), args.Term, args.LastIncludedIndex, args.LastIncludeTerm)
+	defer DPrintf("[term %d]:Raft [%d] state[%d] InstallSnapshot currentLogIndex[%d-%d] term[%d]-lastIncludedIndex[%d]-lastIncludedTerm[%d]-result[%t]",
+		rf.currentTerm, rf.me, rf.state, rf.getFirstLogIndex(), rf.getLastLogIndex(), args.Term, args.LastIncludedIndex, args.LastIncludeTerm, reply.Applied)
 
 	reply.Term = rf.currentTerm
 	reply.Applied = true
 
 	if args.Term < rf.currentTerm {
 		rf.mu.Unlock()
+		DPrintf("InstallSnapshot==misTerm===[%d-%d]=======!!!", args.Term, rf.currentTerm)
 		reply.Applied = false
 		return
 	}
@@ -298,6 +299,8 @@ func (rf *Raft) InstallSnapshot(args *RequestInstallSnapshotArgs, reply *Request
 	// outdated request
 	if args.LastIncludedIndex <= rf.getLastLogIndex() &&
 		rf.log[args.LastIncludedIndex-rf.getFirstLogIndex()].Term == args.LastIncludeTerm {
+
+		DPrintf("InstallSnapshot===sameEntry==[%d-%d]=======!!!", args.LastIncludedIndex, rf.getLastLogIndex())
 		rf.mu.Unlock()
 		reply.Applied = false
 		return
@@ -315,7 +318,7 @@ func (rf *Raft) InstallSnapshot(args *RequestInstallSnapshotArgs, reply *Request
 		}
 	}()
 
-	DPrintf("[term %d]:Raft [%d] state[%d] apply the snapshot to the service successfully", rf.currentTerm, rf.me, rf.state)
+	//DPrintf("[term %d]:Raft [%d] state[%d] apply the snapshot to the service successfully", rf.currentTerm, rf.me, rf.state)
 }
 
 // the service says it has created a snapshot that has
@@ -448,7 +451,7 @@ func (rf *Raft) AppendEntries(args *RequestAppendEntriesArgs, reply *RequestAppe
 	rf.mu.Lock()
 	defer func() {
 		if len(args.Entries) > 0 {
-			DPrintf("[term %d]: Raft[%d] state: [success: %t]-[xterm %d]-[xindex %d] [log: %v] [commitIndex %d] ",
+			DPrintf("[term %d]: Raft[%d] AppendEntries state: [success: %t]-[xterm %d]-[xindex %d] [log: %v] [commitIndex %d] ",
 				rf.currentTerm, rf.me, reply.Success, reply.XTerm, reply.XIndex, rf.log, rf.commitIndex)
 		}
 		rf.mu.Unlock()
@@ -902,8 +905,8 @@ func (rf *Raft) sendRequestAppend(index int) {
 				rf.matchIndex[index] = lastIncludedIndex
 			}
 
-			DPrintf("[term %d]:Raft [%d] successfully append snapshot to Raft[%d], next[%d] match[%d]",
-				rf.currentTerm, rf.me, index, rf.nextIndex[index], rf.matchIndex[index])
+			DPrintf("[term %d]:Raft [%d] successfully append snapshot to Raft[%d], next[%d]-match[%d]-[outdated %t]",
+				rf.currentTerm, rf.me, index, rf.nextIndex[index], rf.matchIndex[index], !reply.Applied)
 			rf.mu.Unlock()
 			return true
 		}
