@@ -40,13 +40,13 @@ const (
 const CHECK_PERIOD = 300         // sleep check period
 const ELECTION_TIMEOUT_LOW = 200 // timeout period 500ms~1000ms
 const ELECTION_TIMEOUT_HIGH = 400
+const OBSERVING_WINDOW = 150
 
 const HEARTBEAT_INTERVAL = 100        // heartbeat per 150ms
 const APPENDCHECK_INTERVAL = 10       // check append per 10ms
 const REQUEST_VOTE_REPLY_TIME = 10000 // 10s
 const COMMITCHECK_INTERVAL = 10       // commit check per 10ms
 
-//
 // as each Raft peer becomes aware that successive log entries are
 // committed, the peer should send an ApplyMsg to the service (or
 // tester) on the same server, via the applyCh passed to Make(). set
@@ -56,7 +56,6 @@ const COMMITCHECK_INTERVAL = 10       // commit check per 10ms
 // in part 2D you'll want to send other kinds of messages (e.g.,
 // snapshots) on the applyCh, but set CommandValid to false for these
 // other uses.
-//
 type ApplyMsg struct {
 	CommandValid bool
 	Command      interface{}
@@ -69,9 +68,7 @@ type ApplyMsg struct {
 	SnapshotIndex int
 }
 
-//
 // A Go object implementing a single Raft peer.
-//
 type Raft struct {
 	mu        sync.Mutex          // Lock to protect shared access to this peer's state
 	peers     []*labrpc.ClientEnd // RPC end points of all peers
@@ -147,11 +144,9 @@ func (rf *Raft) getPersistState() []byte {
 	return data
 }
 
-//
 // save Raft's persistent state to stable storage,
 // where it can later be retrieved after a crash and restart.
 // see paper's Figure 2 for a description of what should be persistent.
-//
 func (rf *Raft) persist() {
 	// Your code here (2C).
 	// Example:
@@ -160,9 +155,7 @@ func (rf *Raft) persist() {
 	rf.persister.SaveRaftState(rf.getPersistState())
 }
 
-//
 // restore previously persisted state.
-//
 func (rf *Raft) readPersist(data []byte) {
 	if data == nil || len(data) < 1 { // bootstrap without any state?
 		return
@@ -213,10 +206,8 @@ func (rf *Raft) getVirtalLastLogIndex() int {
 	return rf.getLastLogIndex() - rf.getFirstLogIndex()
 }
 
-//
 // A service wants to switch to snapshot.  Only do so if Raft hasn't
 // have more recent info since it communicate the snapshot on applyCh.
-//
 func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int, snapshot []byte) bool {
 
 	// Your code here (2D).
@@ -275,15 +266,16 @@ type RequestInstallSnapshotsReply struct {
 func (rf *Raft) InstallSnapshot(args *RequestInstallSnapshotArgs, reply *RequestInstallSnapshotsReply) {
 
 	rf.mu.Lock()
-	DPrintf("[term %d]:Raft [%d] state[%d] InstallSnapshot currentLogIndex[%d-%d] term[%d]-lastIncludedIndex[%d]-lastIncludedTerm[%d]",
-		rf.currentTerm, rf.me, rf.state, rf.getFirstLogIndex(), rf.getLastLogIndex(), args.Term, args.LastIncludedIndex, args.LastIncludeTerm)
+	defer DPrintf("[term %d]:Raft [%d] state[%d] InstallSnapshot currentLogIndex[%d-%d] term[%d]-lastIncludedIndex[%d]-lastIncludedTerm[%d]-result[%t]",
+		rf.currentTerm, rf.me, rf.state, rf.getFirstLogIndex(), rf.getLastLogIndex(), args.Term, args.LastIncludedIndex, args.LastIncludeTerm, reply.Applied)
 
 	reply.Term = rf.currentTerm
-	reply.Applied = true
+	//reply.Applied = true
 
 	if args.Term < rf.currentTerm {
 		rf.mu.Unlock()
-		reply.Applied = false
+		DPrintf("InstallSnapshot==misTerm===[%d-%d]=======!!!", args.Term, rf.currentTerm)
+		//reply.Applied = false
 		return
 	}
 
@@ -297,9 +289,12 @@ func (rf *Raft) InstallSnapshot(args *RequestInstallSnapshotArgs, reply *Request
 	rf.lastReceived = time.Now()
 	// outdated request
 	if args.LastIncludedIndex <= rf.getLastLogIndex() &&
+		args.LastIncludedIndex >= rf.getFirstLogIndex() &&
 		rf.log[args.LastIncludedIndex-rf.getFirstLogIndex()].Term == args.LastIncludeTerm {
+
+		DPrintf("InstallSnapshot===sameEntry==[%d-%d]=======!!!", args.LastIncludedIndex, rf.getLastLogIndex())
 		rf.mu.Unlock()
-		reply.Applied = false
+		//reply.Applied = true
 		return
 	}
 
@@ -315,7 +310,7 @@ func (rf *Raft) InstallSnapshot(args *RequestInstallSnapshotArgs, reply *Request
 		}
 	}()
 
-	DPrintf("[term %d]:Raft [%d] state[%d] apply the snapshot to the service successfully", rf.currentTerm, rf.me, rf.state)
+	//DPrintf("[term %d]:Raft [%d] state[%d] apply the snapshot to the service successfully", rf.currentTerm, rf.me, rf.state)
 }
 
 // the service says it has created a snapshot that has
@@ -348,10 +343,8 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	rf.persister.SaveStateAndSnapshot(rf.getPersistState(), snapshot)
 }
 
-//
 // example RequestVote RPC arguments structure.
 // field names must start with capital letters!
-//
 type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
 	Term         int
@@ -360,20 +353,16 @@ type RequestVoteArgs struct {
 	LastLogTerm  int
 }
 
-//
 // example RequestVote RPC reply structure.
 // field names must start with capital letters!
-//
 type RequestVoteReply struct {
 	// Your data here (2A).
 	Term        int
 	VoteGranted bool
 }
 
-//
 // example RequestVote RPC handler.
 // requestVote parallels with appendEntries
-//
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 	rf.mu.Lock()
@@ -441,16 +430,14 @@ type RequestAppendEntriesReply struct {
 	Success bool
 }
 
-//
 // also heartbeats
-//
 func (rf *Raft) AppendEntries(args *RequestAppendEntriesArgs, reply *RequestAppendEntriesReply) {
 	rf.mu.Lock()
 	defer func() {
-		if len(args.Entries) > 0 {
-			DPrintf("[term %d]: Raft[%d] state: [success: %t]-[xterm %d]-[xindex %d] [log: %v] [commitIndex %d] ",
-				rf.currentTerm, rf.me, reply.Success, reply.XTerm, reply.XIndex, rf.log, rf.commitIndex)
-		}
+		//if len(args.Entries) > 0 {
+		DPrintf("[term %d]: Raft[%d] AppendEntries state: [success: %t]-[xterm %d]-[xindex %d] [log: %v] [commitIndex %d] ",
+			rf.currentTerm, rf.me, reply.Success, reply.XTerm, reply.XIndex, rf.log, rf.commitIndex)
+		//}
 		rf.mu.Unlock()
 	}()
 
@@ -581,7 +568,6 @@ func (rf *Raft) AppendEntries(args *RequestAppendEntriesArgs, reply *RequestAppe
 // 	return ok
 // }
 
-//
 // the service using Raft (e.g. a k/v server) wants to start
 // agreement on the next command to be appended to Raft's log. if this
 // server isn't the leader, returns false. otherwise start the
@@ -594,7 +580,6 @@ func (rf *Raft) AppendEntries(args *RequestAppendEntriesArgs, reply *RequestAppe
 // if it's ever committed. the second return value is the current
 // term. the third return value is true if this server believes it is
 // the leader.
-//
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	index := -1
 	term := -1
@@ -616,7 +601,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	return index, term, isLeader
 }
 
-//
 // the tester doesn't halt goroutines created by Raft after each test,
 // but it does call the Kill() method. your code can use killed() to
 // check whether Kill() has been called. the use of atomic avoids the
@@ -626,7 +610,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 // up CPU time, perhaps causing later tests to fail and generating
 // confusing debug output. any goroutine with a long-running loop
 // should call killed() to check whether it should stop.
-//
 func (rf *Raft) Kill() {
 	atomic.StoreInt32(&rf.dead, 1)
 	// Your code here, if desired.
@@ -651,14 +634,21 @@ func (rf *Raft) ticker() {
 		// needs random otherwise all vote together
 		timeout := int(r.Float64()*(ELECTION_TIMEOUT_HIGH-ELECTION_TIMEOUT_LOW) + ELECTION_TIMEOUT_LOW)
 
-		rf.mu.Lock()
-		if time.Since(rf.lastReceived) > time.Duration(timeout)*time.Millisecond && rf.state != STATE_LEADER {
-			// start election
-			go rf.startElection()
+		//rf.mu.Lock()
+		// if time.Since(rf.lastReceived) > time.Duration(timeout)*time.Millisecond && rf.state != STATE_LEADER {
+		// 	// start election
+		// 	go rf.startElection()
 
+		// }
+		//rf.mu.Unlock()
+		//time.Sleep(CHECK_PERIOD * time.Millisecond)
+
+		time.Sleep(time.Duration(timeout) * time.Millisecond)
+		rf.mu.Lock()
+		if rf.state != STATE_LEADER && time.Since(rf.lastReceived) > OBSERVING_WINDOW*time.Millisecond {
+			go rf.startElection()
 		}
 		rf.mu.Unlock()
-		time.Sleep(CHECK_PERIOD * time.Millisecond)
 	}
 }
 
@@ -897,13 +887,13 @@ func (rf *Raft) sendRequestAppend(index int) {
 				return false
 			}
 
-			if reply.Applied {
-				rf.nextIndex[index] = lastIncludedIndex + 1
-				rf.matchIndex[index] = lastIncludedIndex
-			}
+			//if reply.Applied {
+			rf.nextIndex[index] = int(math.Max(float64(lastIncludedIndex+1), float64(rf.nextIndex[index])))
+			rf.matchIndex[index] = int(math.Max(float64(lastIncludedIndex), float64(rf.matchIndex[index])))
+			//}
 
-			DPrintf("[term %d]:Raft [%d] successfully append snapshot to Raft[%d], next[%d] match[%d]",
-				rf.currentTerm, rf.me, index, rf.nextIndex[index], rf.matchIndex[index])
+			DPrintf("[term %d]:Raft [%d] successfully append snapshot to Raft[%d], next[%d]-match[%d]-[outdated %t]",
+				rf.currentTerm, rf.me, index, rf.nextIndex[index], rf.matchIndex[index], !reply.Applied)
 			rf.mu.Unlock()
 			return true
 		}
@@ -964,7 +954,6 @@ func (rf *Raft) heartbeat() {
 				reply := RequestAppendEntriesReply{}
 				rf.peers[index].Call("Raft.AppendEntries", &req, &reply)
 			}(peer)
-
 		}
 		time.Sleep(time.Millisecond * HEARTBEAT_INTERVAL)
 	}
@@ -1056,6 +1045,10 @@ func (rf *Raft) applyCommited() {
 		commitIndex := rf.commitIndex
 		lastApplied := rf.lastApplied + 1
 		firstLogIndex := rf.getFirstLogIndex()
+		if lastApplied < firstLogIndex || commitIndex <= firstLogIndex {
+			rf.mu.Unlock()
+			continue
+		}
 		logs := rf.log[lastApplied-firstLogIndex : commitIndex-firstLogIndex+1]
 		rf.lastApplied = commitIndex
 		rf.mu.Unlock()
@@ -1076,7 +1069,6 @@ func (rf *Raft) applyCommited() {
 	}
 }
 
-//
 // the service or tester wants to create a Raft server. the ports
 // of all the Raft servers (including this one) are in peers[]. this
 // server's port is peers[me]. all the servers' peers[] arrays
@@ -1086,7 +1078,6 @@ func (rf *Raft) applyCommited() {
 // tester or service expects Raft to send ApplyMsg messages.
 // Make() must return quickly, so it should start goroutines
 // for any long-running work.
-//
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
 
