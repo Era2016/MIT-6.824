@@ -227,23 +227,10 @@ func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int,
 	DPrintf("[term %d]:Raft [%d] state[%d] CondInstallSnapshot lastLogIndex[%d]-lastIncludedIndex[%d]-lastIncludedTerm[%d]",
 		rf.currentTerm, rf.me, rf.state, lastLogIndex, lastIncludedIndex, lastIncludedTerm)
 
-	lastLogIndex := rf.getLastLogIndex()
-	DPrintf("[term %d]:Raft [%d] state[%d] CondInstallSnapshot lastLogIndex[%d]-lastIncludedIndex[%d]-lastIncludedTerm[%d]",
-		rf.currentTerm, rf.me, rf.state, lastLogIndex, lastIncludedIndex, lastIncludedTerm)
-
 	if lastIncludedIndex <= rf.commitIndex {
 		return false
 	}
 
-	//rf.shrinkLogEntries(lastIncludedIndex, lastIncludedTerm)
-	var dst []LogEntry
-	if lastLogIndex < lastIncludedIndex {
-		dst = make([]LogEntry, 1)
-	} else {
-		dst = make([]LogEntry, lastLogIndex-lastIncludedIndex+1)
-		newIndex := lastIncludedIndex - rf.getFirstLogIndex()
-		copy(dst[1:], rf.log[newIndex+1:])
-	}
 	//rf.shrinkLogEntries(lastIncludedIndex, lastIncludedTerm)
 	var dst []LogEntry
 	if lastLogIndex < lastIncludedIndex {
@@ -267,12 +254,6 @@ func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int,
 
 	DPrintf("[term %d]:Raft [%d] state[%d] CondInstallSnapshot [%d] successfully",
 		rf.currentTerm, rf.me, rf.state, lastIncludedIndex)
-
-	//rf.persist()
-	rf.persister.SaveStateAndSnapshot(rf.getPersistState(), snapshot)
-
-	DPrintf("[term %d]:Raft [%d] state[%d] CondInstallSnapshot [%d] successfully",
-		rf.currentTerm, rf.me, rf.state, lastIncludedIndex)
 	return true
 }
 
@@ -289,16 +270,11 @@ type RequestInstallSnapshotArgs struct {
 type RequestInstallSnapshotsReply struct {
 	Term    int
 	Applied bool
-	Term    int
-	Applied bool
 }
 
 func (rf *Raft) InstallSnapshot(args *RequestInstallSnapshotArgs, reply *RequestInstallSnapshotsReply) {
 
 	rf.mu.Lock()
-	DPrintf("[term %d]:Raft [%d] state[%d] InstallSnapshot currentLogIndex[%d-%d] term[%d]-lastIncludedIndex[%d]-lastIncludedTerm[%d]",
-		rf.currentTerm, rf.me, rf.state, rf.getFirstLogIndex(), rf.getLastLogIndex(), args.Term, args.LastIncludedIndex, args.LastIncludeTerm)
-
 	DPrintf("[term %d]:Raft [%d] state[%d] InstallSnapshot currentLogIndex[%d-%d] term[%d]-lastIncludedIndex[%d]-lastIncludedTerm[%d]",
 		rf.currentTerm, rf.me, rf.state, rf.getFirstLogIndex(), rf.getLastLogIndex(), args.Term, args.LastIncludedIndex, args.LastIncludeTerm)
 
