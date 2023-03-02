@@ -800,8 +800,6 @@ func (rf *Raft) sendRequestAppend(index int) {
 				entries = rf.log[nextIndexVal-firstLogIndex:]
 			} else {
 				// snapshot
-				//lastIncludedIndex = rf.lastIncludedIndex
-				//lastIncludedTerm = rf.lastIncludedTerm
 				lastIncludedIndex = rf.getFirstLogIndex()
 				lastIncludedTerm = rf.getFirstLogTerm()
 				snapData = rf.persister.ReadSnapshot()
