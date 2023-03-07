@@ -185,8 +185,8 @@ func (rf *Raft) getLastLogIndex() int {
 	//rf.mu.Lock()
 	//defer rf.mu.Unlock()
 
-	//return rf.lastIncludedIndex + len(rf.log) - 1
-	return rf.getFirstLogIndex() + len(rf.log) - 1
+	//return rf.getFirstLogIndex() + len(rf.log) - 1
+	return rf.log[len(rf.log)-1].Index
 }
 
 // also lastIncludedIndex
@@ -194,7 +194,6 @@ func (rf *Raft) getFirstLogIndex() int {
 	//rf.mu.Lock()
 	//defer rf.mu.Unlock()
 
-	//return rf.lastIncludedIndex
 	return rf.log[0].Index
 }
 
@@ -203,7 +202,8 @@ func (rf *Raft) getFirstLogTerm() int {
 }
 
 func (rf *Raft) getVirtalLastLogIndex() int {
-	return rf.getLastLogIndex() - rf.getFirstLogIndex()
+	//return rf.getLastLogIndex() - rf.getFirstLogIndex()
+	return len(rf.log) - 1
 }
 
 // A service wants to switch to snapshot.  Only do so if Raft hasn't
@@ -222,7 +222,6 @@ func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int,
 		return false
 	}
 
-	//rf.shrinkLogEntries(lastIncludedIndex, lastIncludedTerm)
 	var dst []LogEntry
 	if lastLogIndex < lastIncludedIndex {
 		dst = make([]LogEntry, 1)
@@ -235,12 +234,9 @@ func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int,
 	dst[0] = LogEntry{Term: lastIncludedTerm, Index: lastIncludedIndex, Command: nil}
 	rf.log = dst
 
-	//rf.lastIncludedIndex = lastIncludedIndex
-	//rf.lastIncludedTerm = lastIncludedTerm
 	rf.commitIndex = lastIncludedIndex
 	rf.lastApplied = lastIncludedIndex
 
-	//rf.persist()
 	rf.persister.SaveStateAndSnapshot(rf.getPersistState(), snapshot)
 
 	DPrintf("[term %d]:Raft [%d] state[%d] CondInstallSnapshot [%d] successfully",
@@ -259,23 +255,20 @@ type RequestInstallSnapshotArgs struct {
 }
 
 type RequestInstallSnapshotsReply struct {
-	Term    int
-	Applied bool
+	Term int
 }
 
 func (rf *Raft) InstallSnapshot(args *RequestInstallSnapshotArgs, reply *RequestInstallSnapshotsReply) {
 
 	rf.mu.Lock()
-	defer DPrintf("[term %d]:Raft [%d] state[%d] InstallSnapshot currentLogIndex[%d-%d] term[%d]-lastIncludedIndex[%d]-lastIncludedTerm[%d]-result[%t]",
-		rf.currentTerm, rf.me, rf.state, rf.getFirstLogIndex(), rf.getLastLogIndex(), args.Term, args.LastIncludedIndex, args.LastIncludeTerm, reply.Applied)
+	defer DPrintf("[term %d]: Raft [%d] state[%d] InstallSnapshot currentLogIndex[%d-%d] term[%d]-lastIncludedIndex[%d]-lastIncludedTerm[%d]",
+		rf.currentTerm, rf.me, rf.state, rf.getFirstLogIndex(), rf.getLastLogIndex(), args.Term, args.LastIncludedIndex, args.LastIncludeTerm)
 
 	reply.Term = rf.currentTerm
-	//reply.Applied = true
 
 	if args.Term < rf.currentTerm {
 		rf.mu.Unlock()
 		DPrintf("InstallSnapshot==misTerm===[%d-%d]=======!!!", args.Term, rf.currentTerm)
-		//reply.Applied = false
 		return
 	}
 
@@ -294,7 +287,12 @@ func (rf *Raft) InstallSnapshot(args *RequestInstallSnapshotArgs, reply *Request
 
 		DPrintf("InstallSnapshot===sameEntry==[%d-%d]=======!!!", args.LastIncludedIndex, rf.getLastLogIndex())
 		rf.mu.Unlock()
-		//reply.Applied = true
+		return
+	}
+
+	if args.LastIncludedIndex <= rf.commitIndex {
+		DPrintf("InstallSnapshot===outdatedEntry==[%d-%d]=======!!!", args.LastIncludedIndex, rf.getLastLogIndex())
+		rf.mu.Unlock()
 		return
 	}
 
@@ -335,9 +333,6 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	newIndex := index - rf.getFirstLogIndex()
 	copy(dst[1:], rf.log[newIndex+1:])
 	dst[0] = LogEntry{Term: rf.log[newIndex].Term, Index: index, Command: nil}
-
-	//rf.lastIncludedIndex = index
-	//rf.lastIncludedTerm = rf.log[newIndex].Term
 	rf.log = dst
 
 	rf.persister.SaveStateAndSnapshot(rf.getPersistState(), snapshot)
@@ -434,10 +429,11 @@ type RequestAppendEntriesReply struct {
 func (rf *Raft) AppendEntries(args *RequestAppendEntriesArgs, reply *RequestAppendEntriesReply) {
 	rf.mu.Lock()
 	defer func() {
-		//if len(args.Entries) > 0 {
-		DPrintf("[term %d]: Raft[%d] AppendEntries state: [success: %t]-[xterm %d]-[xindex %d] [log: %v] [commitIndex %d] ",
-			rf.currentTerm, rf.me, reply.Success, reply.XTerm, reply.XIndex, rf.log, rf.commitIndex)
-		//}
+		if len(args.Entries) > 0 {
+			DPrintf("[term %d]: Raft[%d] AppendEntries state: [success: %t]-[xterm %d]-[xindex %d] [log: %v] [commitIndex %d]-[lastApplied %d] ",
+				rf.currentTerm, rf.me, reply.Success, reply.XTerm, reply.XIndex, rf.log, rf.commitIndex, rf.lastApplied)
+		}
+		rf.persist()
 		rf.mu.Unlock()
 	}()
 
@@ -452,35 +448,45 @@ func (rf *Raft) AppendEntries(args *RequestAppendEntriesArgs, reply *RequestAppe
 	}
 
 	if args.Term > rf.currentTerm {
-		if rf.state == STATE_LEADER {
-			DPrintf("[term %d]: Raft[%d] change to [term %d] follower ! <=AppendEntries=>", rf.currentTerm, rf.me, args.Term)
-		}
+		// if rf.state == STATE_LEADER {
+		// 	DPrintf("[term %d]: Raft[%d] change to [term %d] follower ! <=AppendEntries=>", rf.currentTerm, rf.me, args.Term)
+		// }
 		rf.currentTerm = args.Term
-		rf.state = STATE_FOLLOWER
 		rf.votedFor = -1
-		rf.persist()
 	}
 
 	reply.Term = rf.currentTerm
+	rf.state = STATE_FOLLOWER
 	rf.lastReceived = time.Now()
+	//rf.votedFor = -1
+
 	lastLogIndex := rf.getLastLogIndex()
 	firstLogIndex := rf.getFirstLogIndex()
+	if args.PrevLogIndex < firstLogIndex {
+		reply.Success = false
+		reply.Term = 0
+		return
+	}
+
 	if args.PrevLogIndex > lastLogIndex {
 		reply.Success = false
 		reply.XTerm = -1
 		reply.XIndex = lastLogIndex + 1
 		return
-	} else if rf.log[args.PrevLogIndex-rf.getFirstLogIndex()].Term != args.PrevLogTerm {
+	} else if rf.log[args.PrevLogIndex-firstLogIndex].Term != args.PrevLogTerm {
 		reply.Success = false
-		virtalPrevLogIndex := args.PrevLogIndex - rf.getFirstLogIndex()
+		reply.XIndex = 0
+		virtalPrevLogIndex := args.PrevLogIndex - firstLogIndex
 		reply.XTerm = rf.log[virtalPrevLogIndex].Term
 		for i := virtalPrevLogIndex - 1; i >= 0; i-- {
 			if rf.log[i].Term != reply.XTerm {
-				reply.XIndex = i + 1 + rf.getFirstLogIndex()
+				reply.XIndex = i + 1 + firstLogIndex
 				break
 			}
 		}
-
+		if reply.XIndex == 0 {
+			reply.XIndex = firstLogIndex
+		}
 		return
 	}
 
@@ -514,11 +520,6 @@ func (rf *Raft) AppendEntries(args *RequestAppendEntriesArgs, reply *RequestAppe
 		j--
 	}
 	lastNewLogIndex := j
-	// ** new added **
-	rf.state = STATE_FOLLOWER
-	rf.votedFor = -1
-	// ** new added **
-	rf.persist()
 
 	if args.LeaderCommit > rf.commitIndex {
 		// set commitIndex = min(leaderCommit, index of last **new** entry)
@@ -530,7 +531,7 @@ func (rf *Raft) AppendEntries(args *RequestAppendEntriesArgs, reply *RequestAppe
 		if rf.commitIndex > originIndex {
 			rf.cond.Broadcast()
 		}
-		DPrintf("[term %d]: Raft [%d] [state %d] commitIndex is %d", rf.currentTerm, rf.me, rf.state, rf.commitIndex)
+		DPrintf("[term %d]: Raft [%d] state[%d] commitIndex is %d", rf.currentTerm, rf.me, rf.state, rf.commitIndex)
 	}
 }
 
@@ -595,7 +596,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	}
 
 	index = len(rf.log) + rf.getFirstLogIndex()
-	rf.log = append(rf.log, LogEntry{Term: term, Command: command})
+	rf.log = append(rf.log, LogEntry{Term: term, Index: index, Command: command})
 	DPrintf("[term %d]:Raft [%d] starts agreement on [index %d] command", term, rf.me, index)
 	rf.persist()
 	return index, term, isLeader
@@ -741,8 +742,10 @@ func (rf *Raft) startElection() {
 						rf.nextIndex[i] = len(rf.log) + rf.getFirstLogIndex()
 						rf.matchIndex[i] = rf.getFirstLogIndex()
 					}
-					//DPrintf("[term %d]:Raft leader nextindex state, [data %v]", rf.currentTerm, rf.nextIndex)
+
 					DPrintf("[term %d]:Raft [%d] [state %d] becomes leader !", rf.currentTerm, rf.me, rf.state)
+					DPrintf("[term %d]:Raft [%d] [state %d] current state: [commmit %d]-[applied %d]-[leaderlog: %v]",
+						rf.currentTerm, rf.me, rf.state, rf.commitIndex, rf.lastApplied, rf.log)
 					rf.mu.Unlock()
 
 					go rf.heartbeat()
@@ -843,11 +846,15 @@ func (rf *Raft) sendRequestAppend(index int) {
 					var i int
 					for i = lastLogIndex - firstLogIndex; i > 1; i-- {
 						if rf.log[i].Term == reply.XTerm {
-							//rf.nextIndex[index] = i
 							break
 						}
 					}
-					rf.nextIndex[index] = i + firstLogIndex // or 1
+
+					if i == 1 { // not found
+						rf.nextIndex[index] = reply.XIndex
+					} else {
+						rf.nextIndex[index] = i + firstLogIndex // or 1
+					}
 				}
 				rf.mu.Unlock()
 				return false //continue
@@ -887,13 +894,11 @@ func (rf *Raft) sendRequestAppend(index int) {
 				return false
 			}
 
-			//if reply.Applied {
 			rf.nextIndex[index] = int(math.Max(float64(lastIncludedIndex+1), float64(rf.nextIndex[index])))
 			rf.matchIndex[index] = int(math.Max(float64(lastIncludedIndex), float64(rf.matchIndex[index])))
-			//}
 
-			DPrintf("[term %d]:Raft [%d] successfully append snapshot to Raft[%d], next[%d]-match[%d]-[outdated %t]",
-				rf.currentTerm, rf.me, index, rf.nextIndex[index], rf.matchIndex[index], !reply.Applied)
+			DPrintf("[term %d]:Raft [%d] successfully append snapshot to Raft[%d], next[%d]-match[%d]",
+				rf.currentTerm, rf.me, index, rf.nextIndex[index], rf.matchIndex[index])
 			rf.mu.Unlock()
 			return true
 		}
@@ -962,8 +967,7 @@ func (rf *Raft) heartbeat() {
 
 // appendEntries / heartbeats
 func (rf *Raft) activateAppendEntry() {
-	//DPrintf("[term %d]:Raft [%d] [state %d] becomes leader !", rf.currentTerm, rf.me, rf.state)
-	DPrintf("[term %d]:Raft [%d] [leader log: %v]", rf.currentTerm, rf.me, rf.log)
+	//DPrintf("[term %d]:Raft [%d] [leader log: %v]", rf.currentTerm, rf.me, rf.log)
 
 	for peer := range rf.peers {
 		if peer == rf.me {
@@ -977,6 +981,10 @@ func (rf *Raft) activateAppendEntry() {
 func (rf *Raft) activateCommitCheck() {
 	for {
 		rf.mu.Lock()
+		if rf.killed() || rf.state != STATE_LEADER {
+			rf.mu.Unlock()
+			return
+		}
 		N := rf.commitIndex + 1
 		lastLogIndex := rf.getLastLogIndex()
 		firstLogIndex := rf.getFirstLogIndex()
@@ -1005,7 +1013,7 @@ func (rf *Raft) activateCommitCheck() {
 			origin := rf.commitIndex
 			rf.commitIndex = toCommit
 			rf.cond.Broadcast()
-			DPrintf("[term %d]:Raft [%d] [state %d] commit log [entry %d~%d] successfully",
+			DPrintf("[term %d]:Raft [%d] state[%d] commit log [entry %d~%d] successfully",
 				rf.currentTerm, rf.me, rf.state, origin, rf.commitIndex)
 		}
 
@@ -1036,7 +1044,45 @@ func (rf *Raft) activateCommitCheck() {
 
 // periodically apply log[lastApplied] to state machine
 func (rf *Raft) applyCommited() {
-	for {
+	for !rf.killed() {
+		rf.mu.Lock()
+		for rf.lastApplied >= rf.commitIndex {
+			rf.cond.Wait()
+		}
+
+		commitIndex := rf.commitIndex
+		lastApplied := rf.lastApplied
+		firstLogIndex := rf.getFirstLogIndex()
+
+		// if rf.lastApplied < firstLogIndex {
+		// 	rf.lastApplied = firstLogIndex
+		// 	rf.mu.Unlock()
+		// 	continue
+		// }
+
+		logs := make([]LogEntry, commitIndex-lastApplied)
+		copy(logs, rf.log[lastApplied+1-firstLogIndex:commitIndex+1-firstLogIndex])
+		rf.mu.Unlock()
+
+		for _, entry := range logs {
+			rf.applyCh <- ApplyMsg{
+				CommandValid: true,
+				CommandIndex: entry.Index,
+				Command:      entry.Command,
+			}
+		}
+
+		rf.mu.Lock()
+		DPrintf("[term %d]: Raft [%d] state[%d] apply log [entry %d~%d] to the service successfully",
+			rf.currentTerm, rf.me, rf.state, rf.lastApplied, commitIndex)
+		rf.lastApplied = int(math.Max(float64(rf.lastApplied), float64(commitIndex)))
+		rf.mu.Unlock()
+	}
+}
+
+// maybe block by the service
+/*func (rf *Raft) applyCommited() {
+	for !rf.killed() {
 		rf.mu.Lock()
 		for rf.lastApplied >= rf.commitIndex {
 			rf.cond.Wait()
@@ -1045,10 +1091,13 @@ func (rf *Raft) applyCommited() {
 		commitIndex := rf.commitIndex
 		lastApplied := rf.lastApplied + 1
 		firstLogIndex := rf.getFirstLogIndex()
-		if lastApplied < firstLogIndex || commitIndex <= firstLogIndex {
+
+		if lastApplied < firstLogIndex {
+			rf.lastApplied = firstLogIndex
 			rf.mu.Unlock()
 			continue
 		}
+
 		logs := rf.log[lastApplied-firstLogIndex : commitIndex-firstLogIndex+1]
 		rf.lastApplied = commitIndex
 		rf.mu.Unlock()
@@ -1064,10 +1113,10 @@ func (rf *Raft) applyCommited() {
 			}
 		}
 
-		DPrintf("[term %d]: Raft [%d] [state %d] apply log [entry %d~%d] to the service successfully",
+		DPrintf("[term %d]: Raft [%d] state [%d] apply log [entry %d~%d] to the service successfully",
 			rf.currentTerm, rf.me, rf.state, lastApplied, commitIndex)
 	}
-}
+}*/
 
 // the service or tester wants to create a Raft server. the ports
 // of all the Raft servers (including this one) are in peers[]. this
@@ -1101,11 +1150,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.matchIndex = make([]int, len(peers))
 	rf.lastReceived = time.Now()
 
-	//rf.lastIncludedTerm = 0
-	//rf.lastIncludedIndex = 0
-
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
+	rf.lastApplied = int(math.Max(float64(rf.lastApplied), float64(rf.log[0].Index)))
 
 	// start ticker goroutine to start elections
 	go rf.ticker()
