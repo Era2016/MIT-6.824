@@ -206,6 +206,7 @@ func (rf *Raft) getVirtalLastLogIndex() int {
 	return len(rf.log) - 1
 }
 
+
 // A service wants to switch to snapshot.  Only do so if Raft hasn't
 // have more recent info since it communicate the snapshot on applyCh.
 func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int, snapshot []byte) bool {
@@ -489,6 +490,12 @@ func (rf *Raft) AppendEntries(args *RequestAppendEntriesArgs, reply *RequestAppe
 		}
 		return
 	}
+
+	//if args.PrevLogIndex >= len(rf.log) || rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
+	//	//DPrintf("===rf.log[prevLogIndex].Term->%d, args.Term->%d===", rf.log[args.PrevLogIndex].Term, args.PrevLogTerm)
+	//	reply.Success = false
+	//	return
+	//}
 
 	//To bring a follower’s log into consistency with its own,
 	//the leader must find the latest log entry where the two
