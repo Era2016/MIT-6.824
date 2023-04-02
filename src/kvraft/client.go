@@ -2,7 +2,9 @@ package kvraft
 
 import (
 	"crypto/rand"
+	"fmt"
 	"math/big"
+	"sync"
 
 	"6.824/m/labrpc"
 )
@@ -10,6 +12,11 @@ import (
 type Clerk struct {
 	servers []*labrpc.ClientEnd
 	// You will have to modify this struct.
+
+	clientId      int64
+	commandId     int64
+	currentLeader int64
+	rw            sync.RWMutex
 }
 
 func nrand() int64 {
@@ -23,6 +30,10 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
 	// You'll have to add code here.
+
+	ck.clientId = nrand()
+	ck.commandId = 0
+	ck.currentLeader = nrand() % int64(len(ck.servers))
 	return ck
 }
 
@@ -41,7 +52,29 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 func (ck *Clerk) Get(key string) string {
 
 	// You will have to modify this function.
-	return ""
+	args := GetArgs{Key: key, ClientId: ck.clientId, CommandId: ck.commandId}
+	reply := GetReply{}
+
+	ck.rw.RLock()
+	serverId := ck.currentLeader
+	ck.rw.RUnlock()
+	for {
+		if ok := ck.servers[serverId].Call("KVServer.Get", &args, &reply); !ok || reply.Err != OK {
+			if reply.Err != "OK" {
+				fmt.Printf("KVServer.Get failed, err: %v\n", reply.Err)
+			}
+
+			serverId = (serverId + 1) % int64(len(ck.servers))
+			continue
+		} else {
+			ck.rw.Lock()
+			ck.currentLeader = serverId
+			ck.rw.Unlock()
+			break
+		}
+	}
+
+	return reply.Value
 }
 
 //
@@ -56,6 +89,28 @@ func (ck *Clerk) Get(key string) string {
 //
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 	// You will have to modify this function.
+
+	args := PutAppendArgs{Key: key, Value: value, Op: op, ClientId: ck.clientId, CommandId: ck.commandId}
+	reply := PutAppendReply{}
+
+	ck.rw.RLock()
+	serverId := ck.currentLeader
+	ck.rw.RUnlock()
+	for {
+		if ok := ck.servers[serverId].Call("KVServer.PutAppend", &args, &reply); !ok || reply.Err != OK {
+			if reply.Err != "OK" {
+				fmt.Printf("KVServer.PutAppend failed, err: %v\n", reply.Err)
+			}
+			serverId = (serverId + 1) % int64(len(ck.servers))
+			continue
+		} else {
+			ck.rw.Lock()
+			ck.currentLeader = serverId
+			ck.commandId++
+			ck.rw.Unlock()
+			break
+		}
+	}
 }
 
 func (ck *Clerk) Put(key string, value string) {
