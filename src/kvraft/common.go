@@ -1,5 +1,10 @@
 package kvraft
 
+import (
+	"log"
+	"os"
+)
+
 const (
 	OK             = "OK"
 	ErrNoKey       = "ErrNoKey"
@@ -78,4 +83,15 @@ func (m *MemoryKV) Put(key, value string) Err {
 func (m *MemoryKV) Append(key, value string) Err {
 	m.KV[key] += value
 	return OK
+}
+
+const Debug = 1
+
+func DPrintf(format string, a ...interface{}) (n int, err error) {
+	if Debug != 0 {
+		logger := log.New(os.Stdout, "", log.Ldate|log.Lmicroseconds)
+		logger.Printf(format, a...)
+		//log.Printf(format, a...)
+	}
+	return
 }
