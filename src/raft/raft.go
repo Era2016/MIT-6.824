@@ -60,6 +60,7 @@ type ApplyMsg struct {
 	CommandValid bool
 	Command      interface{}
 	CommandIndex int
+	CommandTerm  int
 
 	// For 2D:
 	SnapshotValid bool
@@ -205,7 +206,6 @@ func (rf *Raft) getVirtalLastLogIndex() int {
 	//return rf.getLastLogIndex() - rf.getFirstLogIndex()
 	return len(rf.log) - 1
 }
-
 
 // A service wants to switch to snapshot.  Only do so if Raft hasn't
 // have more recent info since it communicate the snapshot on applyCh.
@@ -599,6 +599,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 	term = rf.currentTerm
 	if rf.state != STATE_LEADER {
+		//log.Printf("[term %d]: Raft[%d] state[%d] isnot leader now", term, rf.state, rf.me)
 		return index, term, false
 	}
 
@@ -750,6 +751,7 @@ func (rf *Raft) startElection() {
 						rf.matchIndex[i] = rf.getFirstLogIndex()
 					}
 
+					//log.Printf("[term %d]:Raft [%d] [state %d] becomes leader !", rf.currentTerm, rf.me, rf.state)
 					DPrintf("[term %d]:Raft [%d] [state %d] becomes leader !", rf.currentTerm, rf.me, rf.state)
 					DPrintf("[term %d]:Raft [%d] [state %d] current state: [commmit %d]-[applied %d]-[leaderlog: %v]",
 						rf.currentTerm, rf.me, rf.state, rf.commitIndex, rf.lastApplied, rf.log)
@@ -1021,7 +1023,7 @@ func (rf *Raft) activateCommitCheck() {
 			rf.commitIndex = toCommit
 			rf.cond.Broadcast()
 			DPrintf("[term %d]:Raft [%d] state[%d] commit log [entry %d~%d] successfully",
-				rf.currentTerm, rf.me, rf.state, origin, rf.commitIndex)
+				rf.currentTerm, rf.me, rf.state, origin+1, rf.commitIndex)
 		}
 
 		/*for N <= lastLogIndex {
@@ -1072,16 +1074,18 @@ func (rf *Raft) applyCommited() {
 		rf.mu.Unlock()
 
 		for _, entry := range logs {
+			DPrintf("[term %d]: Raft [%d] prepare to apply log [entry %d] to the service, total: %d", rf.currentTerm, rf.me, entry.Index, len(logs))
 			rf.applyCh <- ApplyMsg{
 				CommandValid: true,
 				CommandIndex: entry.Index,
+				CommandTerm:  entry.Term,
 				Command:      entry.Command,
 			}
 		}
 
 		rf.mu.Lock()
 		DPrintf("[term %d]: Raft [%d] state[%d] apply log [entry %d~%d] to the service successfully",
-			rf.currentTerm, rf.me, rf.state, rf.lastApplied, commitIndex)
+			rf.currentTerm, rf.me, rf.state, rf.lastApplied+1, commitIndex)
 		rf.lastApplied = int(math.Max(float64(rf.lastApplied), float64(commitIndex)))
 		rf.mu.Unlock()
 	}

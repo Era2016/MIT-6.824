@@ -12,6 +12,8 @@ import (
 	"6.824/m/raft"
 )
 
+const reponseInterval = 600 * 1000
+
 type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
@@ -48,16 +50,20 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
 	defer DPrintf("[server][%d] FuncGet starts, args: key(%s)-clientId(%d)-commandId(%d), reply: %v",
 		kv.me, args.Key, args.ClientId, args.CommandId, reply)
-	index, _, isLeader := kv.rf.Start(Op{Operation: GET, Key: args.Key, ClientId: args.ClientId})
+	index, _, isLeader := kv.rf.Start(Op{Operation: GET, Key: args.Key, ClientId: args.ClientId, CommandId: args.CommandId})
 	if !isLeader {
 		reply.Err = ErrWrongLeader
 		return
 	}
 
 	resp := kv.waitResponse(index)
-	//DPrintf("[server][%d] FuncGet receive response, type: %v, value: %v", kv.me, reflect.TypeOf(*resp).Name(), *resp)
-	r := (*resp).(GetReply)
-	*reply = r
+	if resp == nil {
+		reply.Err = ErrTimeout
+	} else {
+		//DPrintf("[server][%d] FuncGet receive response, type: %v, value: %v", kv.me, reflect.TypeOf(*resp).Name(), *resp)
+		r := (*resp).(GetReply)
+		*reply = r
+	}
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
@@ -83,9 +89,13 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	}
 
 	resp := kv.waitResponse(index)
-	//DPrintf("[server][%d] FuncPutAppend receive response, type: %v, value: %v", kv.me, reflect.TypeOf(*resp).Name(), *resp)
-	r := (*resp).(PutAppendReply)
-	*reply = r
+	if resp == nil {
+		reply.Err = ErrTimeout
+	} else {
+		//DPrintf("[server][%d] FuncPutAppend receive response, type: %v, value: %v", kv.me, reflect.TypeOf(*resp).Name(), *resp)
+		r := (*resp).(PutAppendReply)
+		*reply = r
+	}
 }
 
 func (kv *KVServer) waitResponse(index int) *Response {
@@ -105,12 +115,11 @@ func (kv *KVServer) waitResponse(index int) *Response {
 		kv.mu.Unlock()
 	}()
 
-	timer := time.NewTimer(time.Second * 60)
 	for {
 		select {
 		case resp = <-ch:
 			return resp
-		case <-timer.C:
+		case <-time.After(time.Microsecond * reponseInterval):
 			return nil
 		}
 	}
@@ -118,17 +127,9 @@ func (kv *KVServer) waitResponse(index int) *Response {
 
 func (kv *KVServer) applyToStateMachine() {
 
-	checker := time.NewTicker(time.Millisecond)
-	defer checker.Stop()
-
-	for {
+	for !kv.killed() {
 		var reps Response
 		select {
-		case <-checker.C:
-			if kv.killed() {
-				DPrintf("[server][%d] applyToStateMachine exit", kv.me)
-				return
-			}
 		case msg := <-kv.applyCh:
 
 			//DPrintf("[server][%d] <<<<<<kv.lastOperations: %v", kv.me, kv.lastOperations)
@@ -144,6 +145,7 @@ func (kv *KVServer) applyToStateMachine() {
 				kv.mu.Unlock()
 				continue
 			}
+			kv.lastApplied = msg.CommandIndex
 
 			op := msg.Command.(Op)
 			if op.Operation == GET {
@@ -170,13 +172,20 @@ func (kv *KVServer) applyToStateMachine() {
 				kv.lastOperations[op.ClientId] = OpRelated{CommandId: op.CommandId, Res: reps}
 				DPrintf("[server][%d] statemachine adds records for lastOperations, curr stat: %v", kv.me, kv.lastOperations)
 			}
-			kv.lastApplied = msg.CommandIndex
-		NOTIFY:
-			ch := kv.notifyChans[msg.CommandIndex]
-			kv.mu.Unlock()
 
-			DPrintf("[server][%d] statemachine returns to the client, resp: %v, type: %v", kv.me, reps, reflect.TypeOf(reps).Name())
-			ch <- &reps
+		NOTIFY:
+
+			if term, isLeader := kv.rf.GetState(); isLeader && term == msg.CommandTerm {
+				if ch, ok := kv.notifyChans[msg.CommandIndex]; ok {
+					DPrintf("[server][%d] statemachine returns to the client, resp: %v, type: %v", kv.me, reps, reflect.TypeOf(reps).Name())
+					ch <- &reps
+				} else {
+					DPrintf("[server][%d] statemachine returns to the none client", kv.me)
+				}
+			} else {
+				DPrintf("[server][%d] statemachine discards outdated msg", kv.me)
+			}
+			kv.mu.Unlock()
 
 		} // end of select
 	} // end of for

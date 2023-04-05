@@ -69,6 +69,7 @@ func (ck *Clerk) Get(key string) string {
 		} else {
 			ck.rw.Lock()
 			ck.currentLeader = serverId
+			ck.commandId++
 			DPrintf("[client][%d] Get.update currentLeader, new: %d", ck.clientId, ck.currentLeader)
 			ck.rw.Unlock()
 			break

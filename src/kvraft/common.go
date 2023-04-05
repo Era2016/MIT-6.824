@@ -9,14 +9,15 @@ const (
 	OK             = "OK"
 	ErrNoKey       = "ErrNoKey"
 	ErrWrongLeader = "ErrWrongLeader"
+	ErrTimeout     = "ErrTimeout"
 )
 
 type Err string
 
 const (
-	GET       = "get"
-	PUT       = "put"
-	APPEND    = "append"
+	GET       = "Get"
+	PUT       = "Put"
+	APPEND    = "Append"
 	PUTAPPEND = "putappend"
 )
 
