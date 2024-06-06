@@ -479,6 +479,7 @@ func (rf *Raft) AppendEntries(args *RequestAppendEntriesArgs, reply *RequestAppe
 		reply.XIndex = 0
 		virtalPrevLogIndex := args.PrevLogIndex - firstLogIndex
 		reply.XTerm = rf.log[virtalPrevLogIndex].Term
+		// 找到当前prevLogIndex 所属term的第一个index，并返回
 		for i := virtalPrevLogIndex - 1; i >= 0; i-- {
 			if rf.log[i].Term != reply.XTerm {
 				reply.XIndex = i + 1 + firstLogIndex
@@ -674,72 +675,48 @@ func (rf *Raft) startElection() {
 	term := rf.currentTerm
 	lastLogIndex := rf.getLastLogIndex()
 	lastLogTerm := rf.log[rf.getVirtalLastLogIndex()].Term
-
 	rf.mu.Unlock()
 
 	DPrintf("[term %d]:Raft [%d][state %d] starts an election\n", term, rf.me, rf.state)
-
 	ch := make(chan *RequestVoteReply, len(rf.peers)-1)
 
 	go func() {
-		for peer := range rf.peers {
-			if peer == rf.me {
-				//DPrintf("vote for self : Raft[%d]", rf.me)
-				DPrintf("[term %d] vote for self : Raft[%d]", term, rf.me)
-				continue
-			}
+		voted := 1
+		t := time.NewTicker(time.Millisecond * REQUEST_VOTE_REPLY_TIME)
+		defer t.Stop()
 
-			DPrintf("[term %d]:Raft [%d][state %d] sends requestvote RPC to server[%d]",
-				term, rf.me, rf.state, peer)
+		for {
+			select {
+			case <-t.C:
+				DPrintf("[term %d]:Raft [%d] wait too long for votes", term, rf.me)
+				goto COLLECT
 
-			go func(end *labrpc.ClientEnd) {
-				req := RequestVoteArgs{
-					CandidateId:  candidateId,
-					Term:         term,
-					LastLogTerm:  lastLogTerm,
-					LastLogIndex: lastLogIndex,
-				}
-				reply := RequestVoteReply{}
-				if ret := end.Call("Raft.RequestVote", &req, &reply); ret {
-					ch <- &reply
+			case reply := <-ch:
+				rf.mu.Lock()
+				// ** attention, term cannot be changed **
+				if term != rf.currentTerm {
+					rf.mu.Unlock()
+					break
 				}
 
-			}(rf.peers[peer])
-		}
-	}()
-
-	voted := 1
-	t := time.NewTicker(time.Millisecond * REQUEST_VOTE_REPLY_TIME)
-	defer t.Stop()
-	for {
-		select {
-		case <-t.C:
-			DPrintf("[term %d]:Raft [%d] wait too long for votes", term, rf.me)
-			return
-
-		case reply := <-ch:
-			rf.mu.Lock()
-			// ** attention, term cannot be changed **
-			if term != rf.currentTerm {
+				if reply.Term > rf.currentTerm {
+					// if rf.state == STATE_LEADER {
+					// 	DPrintf("[term %d]: Raft[%d] change to [term %d] follower ! <=gatherVotes=>",
+					// 		rf.currentTerm, rf.me, reply.Term)
+					// }
+					rf.currentTerm = reply.Term
+					rf.state = STATE_FOLLOWER
+					rf.votedFor = -1
+					rf.persist()
+					rf.mu.Unlock()
+					break
+				}
 				rf.mu.Unlock()
-				break
-			}
 
-			if reply.Term > rf.currentTerm {
-				// if rf.state == STATE_LEADER {
-				// 	DPrintf("[term %d]: Raft[%d] change to [term %d] follower ! <=gatherVotes=>",
-				// 		rf.currentTerm, rf.me, reply.Term)
-				// }
-				rf.currentTerm = reply.Term
-				rf.state = STATE_FOLLOWER
-				rf.votedFor = -1
-				rf.persist()
-				rf.mu.Unlock()
-				break
-			}
-			rf.mu.Unlock()
+				if !reply.VoteGranted {
+					continue
+				}
 
-			if reply.VoteGranted {
 				voted++
 				if voted > len(rf.peers)/2 {
 					rf.mu.Lock()
@@ -760,15 +737,41 @@ func (rf *Raft) startElection() {
 					go rf.heartbeat()
 					go rf.activateAppendEntry()
 					go rf.activateCommitCheck()
-					go func() {
-						for range ch {
-						}
-					}()
-					return
+					goto COLLECT
 				}
 			}
-
 		}
+
+	COLLECT:
+		go func() {
+			for range ch {
+			}
+		}()
+	}()
+
+	for peer := range rf.peers {
+		if peer == rf.me {
+			//DPrintf("vote for self : Raft[%d]", rf.me)
+			DPrintf("[term %d] vote for self : Raft[%d]", term, rf.me)
+			continue
+		}
+
+		DPrintf("[term %d]:Raft [%d][state %d] sends requestvote RPC to server[%d]",
+			term, rf.me, rf.state, peer)
+
+		go func(end *labrpc.ClientEnd) {
+			req := RequestVoteArgs{
+				CandidateId:  candidateId,
+				Term:         term,
+				LastLogTerm:  lastLogTerm,
+				LastLogIndex: lastLogIndex,
+			}
+			reply := RequestVoteReply{}
+			if ret := end.Call("Raft.RequestVote", &req, &reply); ret {
+				ch <- &reply
+			}
+
+		}(rf.peers[peer])
 	}
 }
 
@@ -852,6 +855,7 @@ func (rf *Raft) sendRequestAppend(index int) {
 				if reply.XTerm == -1 {
 					rf.nextIndex[index] = reply.XIndex
 				} else {
+					// reply.term 的最后一个index
 					var i int
 					for i = lastLogIndex - firstLogIndex; i > 1; i-- {
 						if rf.log[i].Term == reply.XTerm {
